@@ -185,7 +185,7 @@ public:
    *
    * @return The constructed EvmAddress.
    */
-  [[nodiscard]] EvmAddress toEvmAddress() const;
+  [[nodiscard]] std::optional<EvmAddress> toEvmAddress() const override;
 
 private:
   /**
