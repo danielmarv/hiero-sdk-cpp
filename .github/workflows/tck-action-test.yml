@@ -11,10 +11,6 @@ on:
         description: "Mocha args for the TCK run. Empty runs the whole suite."
         required: false
         default: "src/tests/crypto-service/test-account-create-transaction.ts"
-      tckTag:
-        description: "Tag of hiero-sdk-tck to run"
-        required: false
-        default: "v0.12.4"
 
 permissions:
   contents: read
@@ -23,8 +19,8 @@ jobs:
   tck:
     name: TCK
     runs-on: ubuntu-latest
-    # The C++ server is built from source with vcpkg, which dominates the run.
-    timeout-minutes: 300
+    # The C++ server is compiled from source, which dominates the run.
+    timeout-minutes: 180
 
     steps:
       - name: Free disk space
@@ -32,41 +28,12 @@ jobs:
           df -h /
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
-          sudo docker image prune -af || true
           df -h /
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        # Submodules are left alone: the Dockerfile fetches vcpkg itself, which
-        # keeps the build context small and the image reproducible off a plain
-        # checkout.
-
-      # Built here rather than leaving it to the action so the compile gets the
-      # runner to itself, before Solo's kind cluster claims memory. The action's
-      # own `docker build` then hits the daemon's layer cache and returns at once.
-      - name: Pre-build the TCK server image
-        run: |
-          docker build -f src/tck/Dockerfile -t hiero-sdk-cpp-tck:prewarm .
-          docker image ls hiero-sdk-cpp-tck:prewarm
-          df -h /
-
-      # Confirms the image serves JSON-RPC at all, so a failure here is the
-      # Dockerfile's and a failure later is the network's or the SDK's.
-      - name: Smoke test the image
-        run: |
-          docker run -d --network host -e TCK_PORT=8544 --name tck-smoke hiero-sdk-cpp-tck:prewarm
-          for i in $(seq 1 30); do
-            if curl --silent --fail -H 'Content-Type: application/json' \
-                 --data '{"jsonrpc":"2.0","method":"reset","params":[],"id":1}' \
-                 http://localhost:8544/; then
-              echo; echo "Server answered."; break
-            fi
-            sleep 1
-          done
-          echo "::group::container logs"
-          docker logs tck-smoke 2>&1 || true
-          echo "::endgroup::"
-          docker rm -f tck-smoke
+        # Submodules are left alone: the Dockerfile fetches vcpkg itself, at the
+        # commit named by vcpkg.json's own baseline.
 
       - name: Prepare Hiero Solo
         id: solo
@@ -74,14 +41,16 @@ jobs:
         with:
           installMirrorNode: true
 
+      # No pre-build step this time. The action now builds before it checks out
+      # the TCK, so it gets a clean context and there is nothing to warm.
       - name: Run TCK
         id: tck
-        uses: hiero-hackers/hiero-tck-action@main
+        uses: hiero-hackers/hiero-tck-action@fix/build-context-and-cache
         with:
           dockerfilePath: ./src/tck/Dockerfile
+          dockerBuildArgs: "--build-arg BUILD_JOBS=4"
           serverEnv: |
             TCK_PORT=8544
-          tckTag: ${{ inputs.tckTag || 'v0.12.4' }}
           testMatrix: ${{ inputs.testMatrix == null && 'src/tests/crypto-service/test-account-create-transaction.ts' || inputs.testMatrix }}
           artifactName: tck-report-cpp
 
@@ -90,4 +59,3 @@ jobs:
         run: |
           echo "passed=${{ steps.tck.outputs.passed }} failed=${{ steps.tck.outputs.failed }} of ${{ steps.tck.outputs.total }}"
           echo "genuine=${{ steps.tck.outputs.genuineFailures }} infra=${{ steps.tck.outputs.infraFailures }}"
-          echo "unimplemented: ${{ steps.tck.outputs.unimplementedMethods }}"
